@@ -1,0 +1,318 @@
+#include <unistd.h>
+#include <termios.h>
+#include <iostream>
+#include <pthread.h>
+#include <string>
+#include <ctime>
+#include <cstdlib>
+ 
+using namespace std;
+ 
+// declaring variables
+const int REFRESH_PERIOD = 100000;  //in microseconds, 167k for 60fps
+struct termios startingState;
+char charToPrint = (char)0;     // the shared char between the printing thread and the game thread
+bool showingCombo = true;       // shows if the thing being printed is the combo or user input
+int difficulty = 0;         // 1 for easy, 2 for medium, 3 for hard
+int roundNum = 1;               // current round number
+ 
+// to do with recieving input and printing to the screen
+void enableRaw();
+void disableRaw();
+void* printChar(void*);
+void printSequence(char h[], int size);
+ 
+// to do with game logic and error checking
+bool playRound(char computer[]);
+bool validChar(char a);
+char CharGenFun();
+int LevelSet();
+ 
+ 
+ 
+int main()
+{
+    // setting up the difficulty
+    bool lost = false;
+    char compArray[128];
+    difficulty = LevelSet();
+ 
+    // setting the seed for random number generation
+    srand(time(0));
+ 
+    // setting up the console input to display and making a pthread to
+    // handle printing to the screen
+    enableRaw();
+    pthread_t printThread;
+    pthread_create(&printThread, NULL, printChar, (void *)&charToPrint);
+   
+    // filling up the computer array at the start, based on diff level
+    for(int a = 0; a < roundNum; a++)
+    {
+        compArray[a] = CharGenFun();
+    }
+ 
+    // starting the main game loop
+    do
+    {
+        lost = playRound(compArray);
+       
+        // pausing the thread so that it's clear where the rounds end and begin
+        sleep(1);
+ 
+        // adding one onto the sequence
+        compArray[roundNum] = CharGenFun();
+        roundNum++;
+ 
+    }while(!lost);
+ 
+    // rejoining the graphics pthread and change the console
+    // back to the default state
+    charToPrint = char(27); // killing the print thread
+    pthread_join(printThread, NULL);
+    disableRaw();
+ 
+    cout << "\033c" << "You lost after completing " << roundNum - 1 << " rounds" << endl;
+ 
+    return 0;
+}
+ 
+/*
+    Deals with the execution of each round. Returns true if the player
+    fails the level
+*/
+bool playRound(char comp[])
+{
+    char c = (char)0;   // the last character that was last typed into console
+   
+    // printing out the computer generated array
+    printSequence(comp, roundNum);
+ 
+    // reading in user input char by char until a wrong char is entered, or the end is reached
+    for(int x = 0; x < roundNum; x++)
+    {
+        // blocking until a valid character is read in from console
+        while(read(STDIN_FILENO, &c, 1) == 1 && !validChar(c));
+ 
+        // sending the read char to the global variable to be printed
+        charToPrint = c;
+ 
+        // checking to see if the answer is right
+        if(comp[x] != c)
+        {
+            return true;
+        }
+    }
+ 
+    return false;
+}
+ 
+/*
+    Prints out the computer generated sequence
+*/
+void printSequence(char h[], int size)
+{
+    // indicating to the print thread how fast between displaying characters
+    showingCombo = true;
+ 
+    // sleeping between each print so that it can be seen by the user
+    for(int a = 0; a < size; a++)
+    {
+        switch(difficulty)
+        {
+            case 1: // easy
+                usleep(1000000);
+                break;
+            case 2: // medium
+                usleep(500000);
+                break;
+            case 3: // hard
+                usleep(250000);
+        }
+ 
+        // sending the current char to the global print var
+        charToPrint = h[a];
+    }
+ 
+    showingCombo = false;
+}
+ 
+/*
+    Returns true if the characters passed is valid in the program
+*/
+bool validChar(char a)
+{
+    if(a == 'w' || a == 'a' || a == 's' || a == 'd')
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+ 
+void *printChar(void *a)
+{
+    string printingComboString = "  *THE NEXT COMBO IS*  ";
+    string userEnteringString = "*ENTER THE COMBINATION*";
+ 
+    string wArray = "    *****    \n    |*W*|    \n*************\n| A | S | D |\n*************";
+    string aArray = "    *****    \n    | W |    \n*************\n|*A*| S | D |\n*************";
+    string sArray = "    *****    \n    | W |    \n*************\n| A |*S*| D |\n*************";
+    string dArray = "    *****    \n    | W |    \n*************\n| A | S |*D*|\n*************";
+    string clearBoard = "    *****    \n    | W |    \n*************\n| A | S | D |\n*************\n";
+ 
+    // reassigning the void* that was passed in for readability
+    char *passedChar = (char *)a;
+ 
+    // the printing thread busy waits while the passed char is not an escape char
+    while(*passedChar != char(27))
+    {
+        // the loop eats any non null chars and prints them onto the screen
+        // once the char is recognized, it is reset to NULL so that multiple
+        // presses of the same key can be processed
+        if(*passedChar != (char)0)
+        {
+            cout << "\033c";    // clearing the screen
+ 
+            // printing the header for the comobos
+            if(showingCombo)
+            {
+                cout << printingComboString;
+            }
+            else
+            {
+                cout << userEnteringString;
+            }
+ 
+            // printing out the user's score at the top of the screen
+            cout << "     SCORE: " << roundNum << endl;
+ 
+            switch(*passedChar)
+            {
+                case 'w':
+                    cout << wArray << endl; //printing out the corresponding array
+                    break;
+                case 'a':
+                    cout << aArray << endl;
+                    break;
+                case 's':
+                    cout << sArray << endl;
+                    break;
+                case 'd':
+                    cout << dArray << endl;
+            }
+           
+            *passedChar = (char)0;
+        }
+       
+        // making the thread sleep to mitigate the cost of the busy waiting
+        usleep(REFRESH_PERIOD);
+        cout << "\033c";
+ 
+        // printing the header for the comobos
+        if(showingCombo)
+        {
+            cout << printingComboString;
+        }
+        else
+        {
+            cout << userEnteringString;
+        }
+ 
+        // printing out the user's score at the top of the screen
+        cout << "     SCORE: " << roundNum << endl;
+ 
+        cout << clearBoard;
+    }
+ 
+    pthread_exit(0);
+}
+ 
+ 
+/*
+    Enabling raw input in the console, so that:
+    1) input can be accepted without pressing enter
+    2) echoing is turned off so that the game can be displayed
+*/
+void enableRaw()
+{
+    tcgetattr(STDIN_FILENO, &startingState);
+ 
+    struct termios raw = startingState;
+ 
+    raw.c_lflag &= ~(ECHO | ICANON);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+ 
+/*
+    Returning the console to the original state, which was saved prior
+    to making changes in enableRaw()
+*/
+void disableRaw()
+{
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &startingState);
+}
+ 
+/*
+    Generates a valid char for the sequence. We use WASD instead
+    of colors because it is easier to input on a keyboard
+*/
+ 
+char CharGenFun()
+{
+    char y;
+    int x = rand() % 4;
+ 
+    switch(x)
+    {
+        case 0:
+            y = 'w';
+            break;
+        case 1:
+            y = 'a';
+            break;
+        case 2:
+            y = 's';
+            break;
+        case 3:
+            y = 'd';
+    }
+   
+    return y;
+}
+ 
+/*
+    Asking the user for a difficulty, then returning an int that
+    corrisponds to that difficulty
+*/
+int LevelSet()
+{
+    cout << "Please select difficulty, please enter easy, medium, or hard" << endl;
+    int z = 0;
+    string levelSet;
+ 
+    while(z == 0)
+    {
+        cin >> levelSet;
+        if(levelSet == "easy" || levelSet == "Easy" || levelSet == "EASY" || levelSet == "e")
+        {
+            z = 1;
+        }
+        else if(levelSet == "medium" || levelSet == "Medium" || levelSet == "MEDIUM" || levelSet == "m")
+        {
+            z = 2;
+        }
+        else if(levelSet == "hard" || levelSet == "Hard" || levelSet == "HARD" || levelSet == "h")
+        {
+            z = 3;
+        }
+        else
+        {
+            cout << "pick difficulty again please." << endl;
+        }
+    }
+ 
+    return z;
+}
